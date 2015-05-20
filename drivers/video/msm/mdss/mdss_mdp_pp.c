@@ -3685,7 +3685,7 @@ static struct msm_fb_data_type *mdss_get_mfd_from_index(int index)
 
 	for (i = 0; i < mdata->nctl; i++) {
 		ctl = mdata->ctl_off + i;
-		if ((ctl->power_on) && (ctl->mfd)
+		if ((mdss_mdp_ctl_is_power_on(ctl)) && (ctl->mfd)
 				&& (ctl->mfd->index == index))
 			out = ctl->mfd;
 	}
@@ -4939,7 +4939,7 @@ void mdss_negative_color(int is_negative_on)
 	mdata = mdss_mdp_get_mdata();
 	for (i = 0; i < mdata->nctl; i++) {
 		ctl = mdata->ctl_off + i;
-		if ((ctl->power_on) && (ctl->mfd) && (ctl->mfd->index == 0)) {
+		if ((mdss_mdp_ctl_is_power_on(ctl)) && (ctl->mfd) && (ctl->mfd->index == 0)) {
 			ctl_d = ctl;
 			break;
 		}

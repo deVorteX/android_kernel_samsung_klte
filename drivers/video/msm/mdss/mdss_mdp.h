@@ -76,6 +76,35 @@ static inline u32 mdss_mdp_reg_read(u32 addr)
 #define MDSS_MDP_REG_READ(addr)		MDSS_REG_READ((u32)(addr))
 #endif
 
+#define PERF_STATUS_DONE 0
+#define PERF_STATUS_BUSY 1
+
+/* HW Revisions for different MDSS targets */
+#define MDSS_GET_MAJOR(rev)            ((rev) >> 28)
+#define MDSS_GET_MINOR(rev)            (((rev) >> 16) & 0xFFF)
+#define MDSS_GET_STEP(rev)             ((rev) & 0xFFFF)
+#define MDSS_GET_MAJOR_MINOR(rev)      ((rev) >> 16)
+
+#define IS_MDSS_MAJOR_MINOR_SAME(rev1, rev2)   \
+	   (MDSS_GET_MAJOR_MINOR((rev1)) == MDSS_GET_MAJOR_MINOR((rev2)))
+
+#define MDSS_MDP_REV(major, minor, step)       \
+	   ((((major) & 0x000F) << 28) |           \
+		(((minor) & 0x0FFF) << 16) |           \
+		((step)   & 0xFFFF))
+
+#define MDSS_MDP_HW_REV_101    MDSS_MDP_REV(1, 1, 0) /* 8x26 v1.0 */
+#define MDSS_MDP_HW_REV_101_1  MDSS_MDP_REV(1, 1, 1) /* 8x26 v2.0, 8926 v1.0 */
+#define MDSS_MDP_HW_REV_101_2  MDSS_MDP_REV(1, 1, 2) /* 8926 v2.0 */
+#define MDSS_MDP_HW_REV_102_1  MDSS_MDP_REV(1, 2, 1) /* 8974 v3.0 (Pro) */
+#define MDSS_MDP_HW_REV_103_1  MDSS_MDP_REV(1, 3, 1) /* 8084 v1.1 */
+#define MDSS_MDP_HW_REV_200    MDSS_MDP_REV(2, 0, 0) /* 8092 v1.0 */
+
+enum mdss_mdp_perf_state_type {
+	PERF_SW_COMMIT_STATE = 0,
+	PERF_HW_MDP_STATE,
+};
+
 enum mdss_mdp_block_power_state {
 	MDP_BLOCK_POWER_OFF = 0,
 	MDP_BLOCK_POWER_ON = 1,
@@ -146,12 +175,22 @@ enum mdss_mdp_wb_ctl_type {
 	MDSS_MDP_WB_CTL_TYPE_LINE
 };
 
+struct mdss_mdp_perf_params {
+    u64 bw_overlap;
+	u64 bw_prefill;
+	u32 prefill_bytes;
+	u64 bw_ctl;
+	u32 ib_quota;
+	u32 ab_quota;
+	u32 mdp_clk_rate;
+};
+
 struct mdss_mdp_ctl {
 	u32 num;
 	char __iomem *base;
 	char __iomem *wb_base;
 	u32 ref_cnt;
-	int power_on;
+	int power_state;
 
 	u32 panel_ndx;
 	u32 intf_num;
@@ -175,6 +214,10 @@ struct mdss_mdp_ctl {
 	u32 clk_rate;
 	u32 perf_changed;
 	int force_screen_state;
+    struct mdss_mdp_perf_params cur_perf;
+	struct mdss_mdp_perf_params new_perf;
+	u32 perf_transaction_status;
+	bool perf_release_ctl_bw;
 
 	struct mdss_data_type *mdata;
 	struct msm_fb_data_type *mfd;
@@ -182,6 +225,7 @@ struct mdss_mdp_ctl {
 	struct mdss_mdp_mixer *mixer_right;
 	struct mutex lock;
 	struct mutex *shared_lock;
+    spinlock_t spin_lock;
 
 	struct mdss_panel_data *panel_data;
 	struct mdss_mdp_vsync_handler vsync_handler;
@@ -191,7 +235,7 @@ struct mdss_mdp_ctl {
 	u8 roi_changed;
 
 	int (*start_fnc) (struct mdss_mdp_ctl *ctl);
-	int (*stop_fnc) (struct mdss_mdp_ctl *ctl);
+	int (*stop_fnc) (struct mdss_mdp_ctl *ctl, int panel_power_state);
 	int (*prepare_fnc) (struct mdss_mdp_ctl *ctl, void *arg);
 	int (*display_fnc) (struct mdss_mdp_ctl *ctl, void *arg);
 	int (*wait_fnc) (struct mdss_mdp_ctl *ctl, void *arg);
@@ -408,7 +452,8 @@ struct mdss_overlay_private {
 	int hw_refresh;
 	void *cpu_pm_hdl;
 
-	struct mdss_data_type *mdata;
+    struct mutex list_lock;	
+    struct mdss_data_type *mdata;
 	struct mutex ov_lock;
 	struct mdss_mdp_ctl *ctl;
 	struct mdss_mdp_wb *wb;
@@ -431,12 +476,6 @@ struct mdss_overlay_private {
 	struct mdss_mdp_vsync_handler vsync_retire_handler;
 	struct work_struct retire_work;
 	int retire_cnt;
-};
-
-struct mdss_mdp_perf_params {
-	u32 ib_quota;
-	u32 ab_quota;
-	u32 mdp_clk_rate;
 };
 
 /**
@@ -473,8 +512,30 @@ static inline u32 mdss_mdp_pingpong_read(struct mdss_mdp_mixer *mixer, u32 reg)
 	return readl_relaxed(mixer->pingpong_base + reg);
 }
 
+static inline bool mdss_mdp_ctl_is_power_off(struct mdss_mdp_ctl *ctl)
+{
+	return mdss_panel_is_power_off(ctl->power_state);
+}
+
+static inline bool mdss_mdp_ctl_is_power_on_interactive(
+	struct mdss_mdp_ctl *ctl)
+{
+	return mdss_panel_is_power_on_interactive(ctl->power_state);
+}
+
+static inline bool mdss_mdp_ctl_is_power_on(struct mdss_mdp_ctl *ctl)
+{
+	return mdss_panel_is_power_on(ctl->power_state);
+}
+
+static inline bool mdss_mdp_ctl_is_power_on_lp(struct mdss_mdp_ctl *ctl)
+{
+	return mdss_panel_is_power_on_lp(ctl->power_state);
+}
+
 irqreturn_t mdss_mdp_isr(int irq, void *ptr);
 int mdss_iommu_attach(struct mdss_data_type *mdata);
+int mdss_iommu_dettach(struct mdss_data_type *mdata);
 int mdss_mdp_scan_cont_splash(void);
 void mdss_mdp_irq_clear(struct mdss_data_type *mdata,
 		u32 intr_type, u32 intf_num);
@@ -527,7 +588,7 @@ int mdss_mdp_ctl_split_display_setup(struct mdss_mdp_ctl *ctl,
 struct mdss_mdp_ctl *mdss_mdp_get_split_ctl(struct mdss_mdp_ctl *ctl);
 int mdss_mdp_ctl_destroy(struct mdss_mdp_ctl *ctl);
 int mdss_mdp_ctl_start(struct mdss_mdp_ctl *ctl, bool handoff);
-int mdss_mdp_ctl_stop(struct mdss_mdp_ctl *ctl);
+int mdss_mdp_ctl_stop(struct mdss_mdp_ctl *ctl, int panel_power_mode);
 int mdss_mdp_ctl_intf_event(struct mdss_mdp_ctl *ctl, int event, void *arg);
 
 #if defined(CONFIG_FB_MSM_EDP_SAMSUNG)
@@ -543,6 +604,10 @@ void mdss_mdp_ctl_notifier_unregister(struct mdss_mdp_ctl *ctl,
 
 int mdss_mdp_mixer_handoff(struct mdss_mdp_ctl *ctl, u32 num,
 	struct mdss_mdp_pipe *pipe);
+
+void mdss_mdp_ctl_perf_set_transaction_status(struct mdss_mdp_ctl *ctl,
+	enum mdss_mdp_perf_state_type component, bool new_status);
+void mdss_mdp_ctl_perf_release_bw(struct mdss_mdp_ctl *ctl);
 int mdss_mdp_scan_pipes(void);
 
 struct mdss_mdp_mixer *mdss_mdp_wb_mixer_alloc(int rotator);

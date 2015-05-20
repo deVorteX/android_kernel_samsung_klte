@@ -104,6 +104,13 @@ enum dsi_lane_map_type {
 	DSI_LANE_MAP_3210,
 };
 
+enum dsi_pm_type {
+    DSI_CORE_PM,
+	DSI_CTRL_PM,
+	DSI_PANEL_PM,
+	DSI_MAX_PM
+};
+
 #define CTRL_STATE_UNKNOWN		0x00
 #define CTRL_STATE_PANEL_INIT		BIT(0)
 #define CTRL_STATE_MDP_ACTIVE		BIT(1)
@@ -156,6 +163,7 @@ enum dsi_lane_map_type {
 extern struct device dsi_dev;
 extern int mdss_dsi_clk_on;
 extern u32 dsi_irq;
+extern struct mdss_dsi_ctrl_pdata *ctrl_list[];
 
 struct dsiphy_pll_divider_config {
 	u32 clk_rate;
@@ -242,6 +250,13 @@ enum {
 	DSI_CTRL_MAX,
 };
 
+#define DSI_CTRL_LEFT		DSI_CTRL_0
+#define DSI_CTRL_RIGHT		DSI_CTRL_1
+
+#define DSI_BUS_CLKS	BIT(0)
+#define DSI_LINK_CLKS	BIT(1)
+#define DSI_ALL_CLKS	((DSI_BUS_CLKS) | (DSI_LINK_CLKS))
+
 #define DSI_EV_PLL_UNLOCKED		0x0001
 #define DSI_EV_MDP_FIFO_UNDERFLOW	0x0002
 #define DSI_EV_MDP_BUSY_RELEASE		0x80000000
@@ -250,6 +265,7 @@ struct mdss_dsi_ctrl_pdata {
 	int ndx;	/* panel_num */
 	int (*on) (struct mdss_panel_data *pdata);
 	int (*off) (struct mdss_panel_data *pdata);
+    int (*low_power_config) (struct mdss_panel_data *pdata, int enable);
 #if defined (CONFIG_FB_MSM_MDSS_S6E8AA0A_HD_PANEL)
 	int (*mtp) (struct mdss_panel_data *pdata);	
 #endif
@@ -265,12 +281,18 @@ struct mdss_dsi_ctrl_pdata {
 	void (*bl_fnc) (struct mdss_panel_data *pdata, u32 level);
 	struct mdss_panel_data panel_data;
 	unsigned char *ctrl_base;
+    struct dss_io_data ctrl_io;
+	struct dss_io_data mmss_misc_io;
+	struct dss_io_data phy_io;
 	int reg_size;
+    u32 bus_clk_cnt;
+	u32 link_clk_cnt;
 	u32 clk_cnt;
 	u32 clk_cnt_by_dsi1;
 	struct clk *mdp_core_clk;
 	struct clk *ahb_clk;
 	struct clk *axi_clk;
+    struct clk *mmss_misc_ahb_clk;
 	struct clk *byte_clk;
 	struct clk *esc_clk;
 	struct clk *pixel_clk;
@@ -299,7 +321,7 @@ struct mdss_dsi_ctrl_pdata {
 	struct dsi_drv_cm_data shared_pdata;
 	u32 pclk_rate;
 	u32 byte_clk_rate;
-	struct dss_module_power power_data;
+	struct dss_module_power power_data[DSI_MAX_PM];
 	u32 dsi_irq_mask;
 	struct mdss_hw *dsi_hw;
 	struct mdss_panel_recovery *recovery;
@@ -311,6 +333,9 @@ struct mdss_dsi_ctrl_pdata {
 	struct dsi_panel_cmds cabc_on_cmds;
 	struct dsi_panel_cmds cabc_off_cmds;
 	struct dsi_panel_cmds cabc_tune_cmds;
+
+    bool cmd_sync_wait_broadcast;
+    bool cmd_sync_wait_trigger;
 
 
 	int dsi_on_state;
@@ -328,6 +353,12 @@ struct mdss_dsi_ctrl_pdata {
 	struct mutex cmd_mutex;
 	struct mutex dfps_mutex;
 	int mdp_tg_on;
+
+    u32 ulps_clamp_ctrl_off;
+	u32 ulps_phyrst_ctrl_off;
+	bool ulps;
+	bool core_power;
+	bool mmss_clamp;
 
 	struct dsi_buf tx_buf;
 	struct dsi_buf rx_buf;
@@ -380,7 +411,7 @@ void mdp4_dsi_cmd_trigger(void);
 void mdss_dsi_cmd_mdp_start(struct mdss_dsi_ctrl_pdata *ctrl);
 void mdss_dsi_cmd_bta_sw_trigger(struct mdss_panel_data *pdata);
 void mdss_dsi_ack_err_status(struct mdss_dsi_ctrl_pdata *ctrl);
-int mdss_dsi_clk_ctrl(struct mdss_dsi_ctrl_pdata *ctrl, int enable);
+int mdss_dsi_clk_ctrl(struct mdss_dsi_ctrl_pdata *ctrl, u8 clk_type, int enable);
 void mdss_dsi_clk_req(struct mdss_dsi_ctrl_pdata *ctrl,
 				int enable);
 void mdss_dsi_clk_ctrl_mdp(int ndx, int enable);
@@ -415,12 +446,94 @@ void mdss_dsi_wait4video_done(struct mdss_dsi_ctrl_pdata *ctrl);
 int mdss_dsi_cmdlist_commit(struct mdss_dsi_ctrl_pdata *ctrl, int from_mdp);
 void mdss_dsi_cmdlist_kickoff(int intf);
 int mdss_dsi_bta_status_check(struct mdss_dsi_ctrl_pdata *ctrl);
+bool __mdss_dsi_clk_enabled(struct mdss_dsi_ctrl_pdata *ctrl, u8 clk_type);
+void mdss_dsi_reset(struct mdss_dsi_ctrl_pdata *ctrl);
+void mdss_dsi_ctrl_setup(struct mdss_panel_data *pdata);
 
 int mdss_dsi_panel_init(struct device_node *node,
 		struct mdss_dsi_ctrl_pdata *ctrl_pdata,
 		bool cmd_cfg_cont_splash);
 void mdss_dsi_mdp_busy_wait(int panel_ndx);
 void mdss_dsi_dump_power_clk(struct mdss_panel_data *pdata, int flag);
+
+static inline bool mdss_dsi_is_panel_off(struct mdss_panel_data *pdata)
+{
+	return mdss_panel_is_power_off(pdata->panel_info.panel_power_state);
+}
+
+static inline bool mdss_dsi_is_panel_on(struct mdss_panel_data *pdata)
+{
+	return mdss_panel_is_power_on(pdata->panel_info.panel_power_state);
+}
+
+static inline bool mdss_dsi_is_panel_on_interactive(
+	struct mdss_panel_data *pdata)
+{
+	return mdss_panel_is_power_on_interactive(
+		pdata->panel_info.panel_power_state);
+}
+
+static inline bool mdss_dsi_is_panel_on_lp(struct mdss_panel_data *pdata)
+{
+	return mdss_panel_is_power_on_lp(pdata->panel_info.panel_power_state);
+}
+
+static inline const char *__mdss_dsi_pm_name(enum dsi_pm_type module)
+{
+	switch (module) {
+	case DSI_CORE_PM:	return "DSI_CORE_PM";
+	case DSI_CTRL_PM:	return "DSI_CTRL_PM";
+	case DSI_PANEL_PM:	return "PANEL_PM";
+	default:		return "???";
+	}
+}
+
+static inline const char *__mdss_dsi_pm_supply_node_name(
+	enum dsi_pm_type module)
+{
+	switch (module) {
+	case DSI_CORE_PM:	return "qcom,core-supply-entries";
+	case DSI_CTRL_PM:	return "qcom,ctrl-supply-entries";
+	case DSI_PANEL_PM:	return "qcom,panel-supply-entries";
+	default:		return "???";
+	}
+}
+
+static inline bool mdss_dsi_sync_wait_enable(struct mdss_dsi_ctrl_pdata *ctrl)
+{
+	return ctrl->cmd_sync_wait_broadcast;
+}
+
+static inline bool mdss_dsi_sync_wait_trigger(struct mdss_dsi_ctrl_pdata *ctrl)
+{
+	return ctrl->cmd_sync_wait_broadcast &&
+				ctrl->cmd_sync_wait_trigger;
+}
+
+static inline bool mdss_dsi_is_left_ctrl(struct mdss_dsi_ctrl_pdata *ctrl)
+{
+	return ctrl->ndx == DSI_CTRL_LEFT;
+}
+
+static inline bool mdss_dsi_is_right_ctrl(struct mdss_dsi_ctrl_pdata *ctrl)
+{
+	return ctrl->ndx == DSI_CTRL_RIGHT;
+}
+
+static inline struct mdss_dsi_ctrl_pdata *mdss_dsi_get_other_ctrl(
+					struct mdss_dsi_ctrl_pdata *ctrl)
+{
+	if (ctrl->ndx == DSI_CTRL_RIGHT)
+		return ctrl_list[DSI_CTRL_LEFT];
+
+	return ctrl_list[DSI_CTRL_RIGHT];
+}
+
+static inline bool mdss_dsi_ulps_feature_enabled(
+	struct mdss_panel_data *pdata)
+{
+	return pdata->panel_info.ulps_feature_enabled;
+}
 
 /*for mondrian*/
 void pwm_backlight_enable(void);

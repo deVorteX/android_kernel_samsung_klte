@@ -72,6 +72,18 @@ enum {
 };
 
 enum {
+	MDSS_PANEL_POWER_OFF = 0,
+	MDSS_PANEL_POWER_ON,
+	MDSS_PANEL_POWER_DOZE,
+};
+
+enum {
+	MDSS_PANEL_BLANK_BLANK = 0,
+	MDSS_PANEL_BLANK_UNBLANK,
+	MDSS_PANEL_BLANK_LOW_POWER,
+};
+
+enum {
 	MODE_GPIO_NOT_VALID = 0,
 	MODE_GPIO_HIGH,
 	MODE_GPIO_LOW,
@@ -181,6 +193,8 @@ enum mdss_intf_events {
 	MDSS_EVENT_TE_SET,
 	MDSS_EVENT_TE_RESTORE,
 #endif
+    MDSS_EVENT_DSI_STREAM_SIZE,
+    MDSS_EVENT_REGISTER_RECOVERY_HANDLER,
 };
 
 struct lcd_panel_info {
@@ -334,16 +348,27 @@ struct mdss_panel_info {
 	int pwm_period;
 	u32 mode_gpio_state;
 	bool dynamic_fps;
+    bool ulps_feature_enabled;
 	char dfps_update;
 	int new_fps;
+    int panel_max_fps;
+	int panel_max_vtotal;
+	u32 xstart_pix_align;
+	u32 width_pix_align;
+	u32 ystart_pix_align;
+	u32 height_pix_align;
+	u32 min_width;
+	u32 min_height;
 
 	u32 cont_splash_enabled;
 	u32 partial_update_enabled;
 	struct ion_handle *splash_ihdl;
-	u32 panel_power_on;
+	u32 panel_power_state;
+    int blank_state;
 	int force_screen_state;
 
 	uint32_t panel_dead;
+    bool dynamic_switch_pending;
 
 	struct lcd_panel_info lcdc;
 	struct fbc_panel_info fbc;
@@ -530,6 +555,56 @@ static inline int mdss_panel_get_htotal(struct mdss_panel_info *pinfo)
 
 int mdss_register_panel(struct platform_device *pdev,
 	struct mdss_panel_data *pdata);
+
+/*
+ * mdss_panel_is_power_off: - checks if a panel is off
+ * @panel_power_state: enum identifying the power state to be checked
+ */
+static inline bool mdss_panel_is_power_off(int panel_power_state)
+{
+	return (panel_power_state == MDSS_PANEL_POWER_OFF);
+}
+
+/**
+ * mdss_panel_is_power_on_interactive: - checks if a panel is on and interactive
+ * @panel_power_state: enum identifying the power state to be checked
+ *
+ * This function returns true only is the panel is fully interactive and
+ * opertaing in normal mode.
+ */
+static inline bool mdss_panel_is_power_on_interactive(int panel_power_state)
+{
+	return (panel_power_state == MDSS_PANEL_POWER_ON);
+}
+
+/**
+ * mdss_panel_is_panel_power_on: - checks if a panel is on
+ * @panel_power_state: enum identifying the power state to be checked
+ *
+ * A panel is considered to be on as long as it can accept any commands
+ * or data. Sometimes it is posible to program the panel to be in a low
+ * power non-interactive state. This function returns false only if panel
+ * has explicitly been turned off.
+ */
+static inline bool mdss_panel_is_power_on(int panel_power_state)
+{
+	return !mdss_panel_is_power_off(panel_power_state);
+}
+
+/**
+ * mdss_panel_is_panel_power_on_lp: - checks if a panel is in a low power mode
+ * @pdata: pointer to the panel struct associated to the panel
+ * @panel_power_state: enum identifying the power state to be checked
+ *
+ * This function returns true if the panel is in an intermediate low power
+ * state where it is still on but not fully interactive. It may still accept
+ * commands and display updates but would be operating in a low power mode.
+ */
+static inline bool mdss_panel_is_power_on_lp(int panel_power_state)
+{
+	return !mdss_panel_is_power_off(panel_power_state) &&
+		!mdss_panel_is_power_on_interactive(panel_power_state);
+}
 
 /**
  * mdss_panel_intf_type: - checks if a given intf type is primary

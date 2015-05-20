@@ -69,7 +69,7 @@ enum mdp_notify_event {
 
 struct disp_info_type_suspend {
 	int op_enable;
-	int panel_power_on;
+	int panel_power_state;
 };
 
 struct disp_info_notify {
@@ -78,6 +78,8 @@ struct disp_info_notify {
 	struct completion comp;
 	struct mutex lock;
 	int value;
+	int is_suspend;
+	int ref_count;
 };
 
 struct msm_sync_pt_data {
@@ -120,6 +122,8 @@ struct msm_mdp_interface {
 	int (*do_histogram)(struct msm_fb_data_type *mfd,
 				struct mdp_histogram *hist);
 	int (*update_ad_input)(struct msm_fb_data_type *mfd);
+    int (*ad_attenuate_bl)(u32 bl, u32 *bl_out,
+            struct msm_fb_data_type *mfd);
 	int (*panel_register_done)(struct mdss_panel_data *pdata);
 	u32 (*fb_stride)(u32 fb_index, u32 xres, int bpp);
 	struct msm_sync_pt_data *(*get_sync_fnc)(struct msm_fb_data_type *mfd,
@@ -168,7 +172,8 @@ struct msm_fb_data_type {
 
 	u32 dst_format;
 	int resume_state;
-	int panel_power_on;
+    int panel_power_on;
+	int panel_power_state;
 	struct disp_info_type_suspend suspend;
 
 	struct ion_handle *ihdl;
@@ -181,6 +186,8 @@ struct msm_fb_data_type {
 	u32 ext_bl_ctrl;
 	u32 calib_mode;
 	u32 bl_level;
+    u32 bl_level_scaled;
+    u32 bl_level_prev_scaled;
 	u32 bl_scale;
 	u32 bl_min_lvl;
 	u32 unset_bl_level;
@@ -234,6 +241,8 @@ struct msm_fb_data_type {
 	struct list_head proc_list;
 	u32 wait_for_kickoff;
 
+    bool mdss_fb_split_stored;
+
 	int blank_mode;
 };
 
@@ -254,6 +263,27 @@ static inline void mdss_fb_update_notify_update(struct msm_fb_data_type *mfd)
 		add_timer(&mfd->no_update.timer);
 		mutex_unlock(&mfd->no_update.lock);
 	}
+}
+
+static inline bool mdss_fb_is_power_off(struct msm_fb_data_type *mfd)
+{
+	return mdss_panel_is_power_off(mfd->panel_power_state);
+}
+
+static inline bool mdss_fb_is_power_on_interactive(
+	struct msm_fb_data_type *mfd)
+{
+	return mdss_panel_is_power_on_interactive(mfd->panel_power_state);
+}
+
+static inline bool mdss_fb_is_power_on(struct msm_fb_data_type *mfd)
+{
+	return mdss_panel_is_power_on(mfd->panel_power_state);
+}
+
+static inline bool mdss_fb_is_power_on_lp(struct msm_fb_data_type *mfd)
+{
+	return mdss_panel_is_power_on_lp(mfd->panel_power_state);
 }
 #ifdef CONFIG_FB_MSM_CAMERA_CSC
 extern u8 csc_update;

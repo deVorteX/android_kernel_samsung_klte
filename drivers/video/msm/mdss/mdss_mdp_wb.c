@@ -558,7 +558,12 @@ int mdss_mdp_wb_kickoff(struct msm_fb_data_type *mfd)
 		.data = NULL,
 	};
 
-	if (!ctl->power_on)
+	if (!ctl) {
+        pr_err("no ctl attached to fb=%d devicet\n", mfd->index);
+        return -ENODEV;
+    }
+
+    if (!mdss_mdp_ctl_is_power_on(ctl))
 		return 0;
 
 	mutex_lock(&mdss_mdp_wb_buf_lock);
